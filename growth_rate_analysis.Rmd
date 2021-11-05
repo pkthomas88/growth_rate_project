@@ -1,0 +1,188 @@
+---
+title: "Growth rate analysis"
+author: "Patrick Thomas"
+date: "11/5/2021"
+output: html_document
+---
+
+
+>load packages and set theme
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(psych)
+library(growthrates)
+library(knitr)
+library(growthrates)
+
+theme_set(theme_bw()+
+            theme(axis.text=element_text(size=16),
+  axis.title.x = element_text(size = 16),
+  axis.title.y = element_text(size = 16),
+  strip.text = element_text(size=16)))
+
+```
+
+> run the following to install growthTools and its required packages, if necessary
+
+```{r}
+# install.packages("remotes")
+# remotes::install_github("ctkremer/mleTools")
+# remotes::install_github("ctkremer/growthTools")
+library(growthTools)
+
+```
+
+
+> create list of files to combine
+
+```{r}
+growth_files <- list.files("C:/Users/pktho/OneDrive/Growth rates paper/growth_rate_project", # change this based on location of files
+                        pattern = "growthdata.csv",  # Limit to just files ending in growthdata.csv
+                        recursive = TRUE,  # Search within subfolders
+                        full.names = TRUE) # Return full paths
+
+growth_files
+
+
+
+```
+
+>combine files based on that list
+
+```{r}
+
+df <- lapply(growth_files, function(i){
+  x=read_csv(i, na = "NA", col_types = cols(colonial = col_character()))
+  x$filename = i
+  x
+})
+
+df[[1]] # to look at a certain data file for example
+
+df=do.call("bind_rows", df) # binds all data frames read in above, but requires same column names or it will create duplicat columns!
+
+
+#check out the combined data in several ways
+dim(df)
+names(df)
+str(df)
+summary(df)
+summary_data <- describe(df)
+kable(summary_data)
+length(unique(df$unique_ID)) #how many total growth rate estimates will we have?
+
+```
+
+> some plots for fun and to look at outliers
+
+```{r}
+
+df %>%
+  ggplot(aes(time_days, RFU_platereader, color = researcher_ID))+
+  geom_point(alpha=.2)
+
+df %>%
+  ggplot(aes(OD, RFU_platereader, color = researcher_ID))+
+  geom_point(alpha=.2)
+
+df %>% filter(OD<1.5) %>% 
+  ggplot(aes(OD, RFU_platereader, color = researcher_ID))+
+  geom_point(alpha=.2)
+
+df %>% filter(time_days <0.05) %>% 
+  ggplot(aes(RFU_platereader))+
+  geom_histogram()+
+  ggtitle('a look at initial densities in RFU - all <30 so far')
+
+time_stuff <- df %>% 
+  group_by(unique_ID) %>% 
+  summarize(time_points = length(time_days),
+            interval = time_days - dplyr::lag(time_days, n =1)) 
+
+time_stuff %>% 
+  ggplot(aes(time_points))+
+  geom_histogram()
+time_stuff %>% 
+  ggplot(aes(interval))+
+  geom_histogram()
+
+```
+
+>one way to measure time taken for e.g. growth rate calculations
+
+```{r}
+sleep_for_a_minute <- function() { Sys.sleep(5) }
+start_time <- Sys.time()
+sleep_for_a_minute()
+end_time <- Sys.time()
+end_time - start_time
+
+```
+
+>making a small test dataset
+
+```{r}
+
+IDs <- unique(df$unique_ID)
+test <- df %>% filter(unique_ID %in% IDs[1:100]) #tyring to subset just the first 100 experimental units
+length(unique(test$unique_ID)) #ok that worked
+
+
+
+```
+
+
+
+```{r}
+p     <- c(y0 = 5, mumax = 0.5, K = 50)
+lower <- c(y0 = 0, mumax = -5,   K = 0)
+upper <- c(y0 = 30, mumax = 2,   K = 800)
+
+start_time <- Sys.time()
+test_logistic_fits <- all_growthmodels(
+                   RFU_platereader ~ grow_logistic(time_days, parms) | unique_ID,
+                   data = test,
+                   p = p, lower = lower, upper = upper,
+                   log = "y", ncores=2)
+end_time <- Sys.time()
+test_time <- end_time - start_time
+test_time
+
+test_logistic_results <- results(test_logistic_fits) %>% 
+  mutate(model = "growthrates::logistic")%>% 
+  select(unique_ID, mumax, model, r2)
+
+```
+
+>plotting above curves
+
+```{r}
+par(mfrow = c(4, 6))
+par(mar=c(1,2,1,1))
+plot(test_logistic_fits, log = "y")
+
+```
+
+>test with growthTools
+
+```{r}
+
+get.gr.lagsat(test$time_days, test$RFU_platereader)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
