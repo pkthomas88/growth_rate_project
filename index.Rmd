@@ -1,0 +1,9 @@
+---
+title: "index.Rmd"
+author: "Patrick Thomas"
+date: "11/5/2021"
+output: html_document
+---
+
+
+[link to some growth rate analysis stuff](growth_rate_analysis.html)
