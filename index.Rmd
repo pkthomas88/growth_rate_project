@@ -1,5 +1,5 @@
 ---
-title: "index.Rmd"
+title: "Growth rates project"
 author: "Patrick Thomas"
 date: "11/5/2021"
 output: html_document
