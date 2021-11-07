@@ -1,12 +1,19 @@
 ---
 title: "Growth rate analysis"
 author: "Patrick Thomas"
-date: "11/5/2021"
-output: html_document
+date: "Nov 7 2021"
+output: 
+  html_document:
+    number_sections: true
+    toc: true
+    toc_float:
+      collapsed: true
 ---
 
 
->load packages and set theme
+# Setup, data import and checking
+
+> load packages and set theme
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
@@ -16,6 +23,7 @@ library(psych)
 library(growthrates)
 library(knitr)
 library(growthrates)
+library(googledrive)
 
 theme_set(theme_bw()+
             theme(axis.text=element_text(size=16),
@@ -35,10 +43,10 @@ library(growthTools)
 
 ```
 
-
 > create list of files to combine
 
 ```{r}
+
 growth_files <- list.files("C:/Users/pktho/OneDrive/Growth rates paper/growth_rate_project", # change this based on location of files
                         pattern = "growthdata.csv",  # Limit to just files ending in growthdata.csv
                         recursive = TRUE,  # Search within subfolders
@@ -46,26 +54,28 @@ growth_files <- list.files("C:/Users/pktho/OneDrive/Growth rates paper/growth_ra
 
 growth_files
 
-
-
 ```
 
->combine files based on that list
+> combine files based on that list
 
 ```{r}
-
 df <- lapply(growth_files, function(i){
-  x=read_csv(i, na = "NA", col_types = cols(colonial = col_character()))
+  x=read_csv(i, na = "NA", col_types = cols(colonial = col_character(),
+                                            time_acclimation = col_character(),
+                                            RFU_excitation_emission = col_character()))
   x$filename = i
   x
 })
 
-df[[1]] # to look at a certain data file for example
+#df[[1]] # to look at a certain data file for example
 
 df=do.call("bind_rows", df) # binds all data frames read in above, but requires same column names or it will create duplicat columns!
 
+```
 
-#check out the combined data in several ways
+>check out the combined data in several ways to make sure it all makes sense and was imported correctly
+
+```{r}
 dim(df)
 names(df)
 str(df)
@@ -76,7 +86,24 @@ length(unique(df$unique_ID)) #how many total growth rate estimates will we have?
 
 ```
 
-> some plots for fun and to look at outliers
+> calculate sampling intervals, total number samples [probably add more things here later e.g., hour to day conversions, other stuff like that if necessary]
+
+```{r}
+
+df <- df %>% 
+  #combine researcher ID with unique ID to make sure it's unique across all datasets
+  mutate(unique_ID = paste(researcher_ID, unique_ID, sep = '_')) %>% 
+  #calculate number of observations and time between all observations
+  group_by(unique_ID) %>% 
+  mutate(time_points = length(time_days),
+            interval = time_days - dplyr::lag(time_days, n =1)) 
+
+
+
+```
+
+
+> some plots for fun and to look at outliers and the spread of the data
 
 ```{r}
 
@@ -95,46 +122,37 @@ df %>% filter(OD<1.5) %>%
 df %>% filter(time_days <0.05) %>% 
   ggplot(aes(RFU_platereader))+
   geom_histogram()+
-  ggtitle('a look at initial densities in RFU - all <30 so far')
+  ggtitle('a look at initial densities in RFU for y0 info - all <30 so far')
 
-time_stuff <- df %>% 
-  group_by(unique_ID) %>% 
-  summarize(time_points = length(time_days),
-            interval = time_days - dplyr::lag(time_days, n =1)) 
 
-time_stuff %>% 
+df %>% 
   ggplot(aes(time_points))+
   geom_histogram()
-time_stuff %>% 
+
+df %>% 
   ggplot(aes(interval))+
   geom_histogram()
 
 ```
 
->one way to measure time taken for e.g. growth rate calculations
 
-```{r}
-sleep_for_a_minute <- function() { Sys.sleep(5) }
-start_time <- Sys.time()
-sleep_for_a_minute()
-end_time <- Sys.time()
-end_time - start_time
+# Test runs with reduced datasets
 
-```
-
->making a small test dataset
+> making a small test dataset for trying different approaches [maybe next step is to take 20 growth curves from each of our experiments and compare that as a test]
 
 ```{r}
 
 IDs <- unique(df$unique_ID)
-test <- df %>% filter(unique_ID %in% IDs[1:100]) #tyring to subset just the first 100 experimental units
+test <- df %>% filter(unique_ID %in% IDs[1:20]) #trying to subset just the first 20 experimental units/growth curves
 length(unique(test$unique_ID)) #ok that worked
 
 
 
 ```
 
+> already got this message trying to run even a subset of the data the first time....but worked eventually
 
+![](R_session_fail.png)
 
 ```{r}
 p     <- c(y0 = 5, mumax = 0.5, K = 50)
@@ -148,8 +166,8 @@ test_logistic_fits <- all_growthmodels(
                    p = p, lower = lower, upper = upper,
                    log = "y", ncores=2)
 end_time <- Sys.time()
-test_time <- end_time - start_time
-test_time
+logistic_test_time <- end_time - start_time
+logistic_test_time
 
 test_logistic_results <- results(test_logistic_fits) %>% 
   mutate(model = "growthrates::logistic")%>% 
@@ -157,7 +175,9 @@ test_logistic_results <- results(test_logistic_fits) %>%
 
 ```
 
->plotting above curves
+> that approach took `r round(as.numeric(logistic_test_time), 2)` seconds to calculate `r length(unique(test$unique_ID))` growth rates
+
+> plotting above curves
 
 ```{r}
 par(mfrow = c(4, 6))
@@ -166,23 +186,73 @@ plot(test_logistic_fits, log = "y")
 
 ```
 
->test with growthTools
+
+# Growth rate calculations for full dataset
+
+> quickly trying the 2-point growth rate approach by taking the max increase over between two adjacent time points (i.e., either 1, 2, or 4 days depending on the sampling interval)
+
+```{r}
+start_time <- Sys.time()
+
+max_diffs <- df %>% 
+  mutate(logRFU = log(RFU_platereader)) %>% 
+  group_by(unique_ID, researcher_ID, system) %>% 
+  mutate(deltalogRFU = logRFU - dplyr::lag(logRFU, n=1)) %>% 
+  mutate(deltatime = time_days - dplyr::lag(time_days, n=1)) %>% 
+  mutate(mu = deltalogRFU/deltatime)
+
+max_rates <- max_diffs %>% 
+  group_by(unique_ID, researcher_ID, system) %>% 
+  summarize(mumax = max(mu, na.rm = TRUE)) %>% 
+  mutate(model="max_diff_2days") %>% 
+  mutate(r2 = "NA") %>%
+  mutate(r2=as.numeric(r2))
+
+end_time <- Sys.time()
+maxdiff_time <- end_time - start_time
+
+```
+
+> that approach took `r round(as.numeric(maxdiff_time), 2)` seconds to calculate `r length(max_rates$mumax)` growth rates
+
+```{r}
+max_rates %>% ggplot(aes(mumax, fill = system))+
+  geom_density(alpha = 0.7)
+
+max_rates %>% ggplot(aes(mumax, fill = researcher_ID))+
+  geom_density(alpha = 0.7)
+
+```
+
+> notes so far:
+
+- combining data works pretty well overall!
+- differences in formatting stuff like commas vs periods and different column names are minor problems but can be fixed
+- running the full dataset might in the `growthrates` package might kill my computer
+
+```{r}
+
+knitr::knit_exit()
+
+
+```
+
+> one way to measure time taken for e.g. growth rate calculations
+
+```{r}
+sleep_for_a_minute <- function() { Sys.sleep(5) }
+start_time <- Sys.time()
+sleep_for_a_minute()
+end_time <- Sys.time()
+end_time - start_time
+
+```
+
+
+> test with growthTools
 
 ```{r}
 
 get.gr.lagsat(test$time_days, test$RFU_platereader)
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
