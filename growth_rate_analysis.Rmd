@@ -47,6 +47,7 @@ library(growthTools)
 
 ```{r}
 
+#create list of growth data files
 growth_files <- list.files("C:/Users/pktho/OneDrive/Growth rates paper/growth_rate_project", # change this based on location of files
                         pattern = "growthdata.csv",  # Limit to just files ending in growthdata.csv
                         recursive = TRUE,  # Search within subfolders
@@ -54,9 +55,18 @@ growth_files <- list.files("C:/Users/pktho/OneDrive/Growth rates paper/growth_ra
 
 growth_files
 
+# create list of metadata files
+metadata_files <- list.files("C:/Users/pktho/OneDrive/Growth rates paper/growth_rate_project", # change this based on location of files
+                        pattern = "metadata.csv",  # Limit to just files ending in growthdata.csv
+                        recursive = TRUE,  # Search within subfolders
+                        full.names = TRUE) # Return full paths
+
+metadata_files
+
 ```
 
-> combine files based on that list
+
+> combine data files based on above list
 
 ```{r}
 df <- lapply(growth_files, function(i){
@@ -71,7 +81,56 @@ df <- lapply(growth_files, function(i){
 
 df=do.call("bind_rows", df) # binds all data frames read in above, but requires same column names or it will create duplicat columns!
 
+#combine researcher ID with unique ID to make sure it's unique across all datasets
+df <- df %>% mutate(unique_ID = paste(researcher_ID, unique_ID, sep = '_'))
+
 ```
+
+> combine metadata files based on above metadata file list
+
+```{r}
+
+metadata <- lapply(metadata_files, function(i){
+  x=read_csv(i, na = "NA", col_types = cols(colonial = col_character(),
+                                            time_acclimation = col_character(),
+                                            RFU_excitation_emission = col_character()))
+  x$filename = i
+  x
+})
+
+metadata=do.call("bind_rows", metadata)
+metadata <- metadata %>% mutate(unique_ID = paste(researcher_ID, unique_ID, sep = '_'))
+
+```
+
+
+>stuff I have to do for now since metadata is in different places for different people
+
+```{r}
+
+df <- df %>% select(researcher_ID:cell_density)
+df_Vanessa <- df %>% filter(researcher_ID=="Vanessa")
+df_Vanessa <- left_join(df_Vanessa, metadata)
+df <- df %>% filter(researcher_ID!="Vanessa")
+df <- bind_rows(df, df_Vanessa)
+
+```
+
+> calculate sampling intervals, total number samples [probably add more things here later e.g., hour to day conversions, other stuff like that if necessary]
+
+```{r}
+
+df <- df %>% 
+  #calculate number of observations and time between all observations
+  group_by(unique_ID) %>% 
+  mutate(time_points = length(time_days),
+            interval = time_days - dplyr::lag(time_days, n =1)) 
+
+df <- left_join(df, metadata)
+
+
+```
+
 
 >check out the combined data in several ways to make sure it all makes sense and was imported correctly
 
@@ -83,22 +142,6 @@ summary(df)
 summary_data <- describe(df)
 kable(summary_data)
 length(unique(df$unique_ID)) #how many total growth rate estimates will we have?
-
-```
-
-> calculate sampling intervals, total number samples [probably add more things here later e.g., hour to day conversions, other stuff like that if necessary]
-
-```{r}
-
-df <- df %>% 
-  #combine researcher ID with unique ID to make sure it's unique across all datasets
-  mutate(unique_ID = paste(researcher_ID, unique_ID, sep = '_')) %>% 
-  #calculate number of observations and time between all observations
-  group_by(unique_ID) %>% 
-  mutate(time_points = length(time_days),
-            interval = time_days - dplyr::lag(time_days, n =1)) 
-
-
 
 ```
 
@@ -122,7 +165,8 @@ df %>% filter(OD<1.5) %>%
 df %>% filter(time_days <0.05) %>% 
   ggplot(aes(RFU_platereader))+
   geom_histogram()+
-  ggtitle('a look at initial densities in RFU for y0 info - all <30 so far')
+  facet_wrap(~researcher_ID, scales = 'free')+
+  ggtitle("a look at initial densities in RFU for y0 info: \na bit of a big range now so maybe can't use the same parameters for all..?")
 
 
 df %>% 
@@ -214,6 +258,8 @@ maxdiff_time <- end_time - start_time
 ```
 
 > that approach took `r round(as.numeric(maxdiff_time), 2)` seconds to calculate `r length(max_rates$mumax)` growth rates
+
+>also there are a lot of NA and Inf values so need to check why that is....
 
 ```{r}
 max_rates %>% ggplot(aes(mumax, fill = system))+
