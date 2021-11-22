@@ -1,0 +1,138 @@
+---
+title: "growthTools_code"
+author: "Vanessa Weber de Melo"
+date: "11/10/2021"
+output:
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+## Load some libraries that are useful
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+
+# use the package growthTools to analyse the data
+# install.packages("devtools")
+# devtools::install_github("ctkremer/mleTools")
+# devtools::install_github("https://github.com/ctkremer/growthTools")
+library(growthTools)
+
+library(broom)
+
+```
+
+## Load some data
+
+```{r load the data}
+
+# load the data with a map function, which also stores the file name
+growth_data <- read_csv("Vanessa_expA_growthdata.csv")
+
+
+# load the metadata
+metadata <- read_csv("Vanessa_expA_metadata.csv")
+
+
+```
+
+## Plot the rfu data through time
+
+```{r plot the data}
+
+ggplot(growth_data, aes(x = time_days, y = RFU_platereader, group = unique_ID)) +
+  geom_point() +
+  geom_line(size = 0.5) +
+  ylab(" RFU") +
+  xlab("Day") +
+  theme(text = element_text(size = 10), title = element_text(face = "bold"),
+       panel.background = element_rect(colour = "black", fill = "white"),
+       panel.grid = element_blank()) +
+  scale_y_log10()
+
+
+```
+
+## Test the growthTools package
+
+```{r growthTools package}
+
+
+# make a variable with the ln of the RFUs
+growth_data <- growth_data %>% mutate(log_RFU_platereader = log(RFU_platereader))
+
+# estimate the best growth model for all 
+growth_rates <- growth_data %>%
+  group_by(unique_ID) %>%
+  do(grs = get.growth.rate(x = .$time_days, y = .$log_RFU_platereader, 
+                           methods = c("linear", "lag", "sat", "flr", "lagsat"),
+                           id = .$unique_ID, plot.best.Q = T, fpath = NA))
+
+# get important parameters of the models
+summary_growth_rates <- growth_rates %>% 
+  summarise(unique_ID, 
+            mu = grs$best.slope, # mu of the best model
+            best_model = grs$best.model, # name of the best model
+            best.model_r2 = grs$best.model.rsqr, # r squared of the best model
+            best_se = grs$best.se, # standard error of the best model
+            contents = grs$best.model.contents) # best model
+
+
+# only keep models with r squared larger than 0.5
+summary_growth_rates <- summary_growth_rates %>% filter(best.model_r2 > 0.5)
+
+# get the model fits
+models <- summary_growth_rates %>%
+  unnest_legacy(contents %>% map(augment, .id = "number")) %>% 
+  rename(time_days = x)
+
+# plot the RFU data and the model fit as a line
+ggplot(growth_data, aes(x = time_days, y = log_RFU_platereader, group = unique_ID)) +
+  geom_point() +
+  ylab("log(RFU)") +
+  xlab("Day") +
+  geom_line(data = models, aes(x = time_days, y = .fitted, group = unique_ID)) +
+  facet_wrap(~ unique_ID) +
+  theme(text = element_text(size = 10), title = element_text(face = "bold"),
+        panel.background = element_rect(colour = "black", fill = "white"),
+        panel.grid = element_blank()) 
+```
+
+## Plot the models again, now look at different growht conditions
+
+```{r plots with metadata}
+
+
+# add the metadata to the growth_data and also to the model fits
+growth_data <- growth_data %>% left_join(metadata)
+
+models <- models %>% left_join(metadata)
+
+# plot the data and the model fits again, facets with different temperatures
+ggplot(growth_data, aes(x = time_days, y = log_RFU_platereader, group = unique_ID)) +
+  geom_point() +
+  ylab("log(RFU)") +
+  xlab("Day") +
+  geom_line(data = models, aes(x = time_days, y = .fitted, group = unique_ID)) +
+  facet_wrap(~ temperature) +
+  theme(text = element_text(size = 10), title = element_text(face = "bold"),
+        panel.background = element_rect(colour = "black", fill = "white"),
+        panel.grid = element_blank()) 
+
+# plot the data and the model fits again, facets with different temperatures
+ggplot(growth_data, aes(x = time_days, y = log_RFU_platereader, group = unique_ID)) +
+  geom_point() +
+  ylab("log(RFU)") +
+  xlab("Day") +
+  geom_line(data = models, aes(x = time_days, y = .fitted, group = unique_ID)) +
+  facet_grid(`dissolved N`~ temperature) +
+  theme(text = element_text(size = 10), title = element_text(face = "bold"),
+        panel.background = element_rect(colour = "black", fill = "white"),
+        panel.grid = element_blank()) 
+
+
+```
+
