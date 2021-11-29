@@ -104,7 +104,7 @@ metadata <- metadata %>% mutate(unique_ID = paste(researcher_ID, unique_ID, sep 
 ```
 
 
->stuff I have to do for now since metadata is in different places for different people
+> stuff I have to do for now since metadata is in different places for different people
 
 ```{r}
 
@@ -128,13 +128,13 @@ df <- df %>%
 
 df <- left_join(df, metadata)
 
-
 ```
 
 
 >check out the combined data in several ways to make sure it all makes sense and was imported correctly
 
 ```{r}
+
 dim(df)
 names(df)
 str(df)
@@ -142,6 +142,8 @@ summary(df)
 summary_data <- describe(df)
 kable(summary_data)
 length(unique(df$unique_ID)) #how many total growth rate estimates will we have?
+df %>% group_by(researcher_ID) %>% 
+  summarize(count = length(unique(unique_ID)))#look at how many growth rates we'll have per person
 
 ```
 
@@ -182,23 +184,52 @@ df %>%
 
 # Test runs with reduced datasets
 
-> making a small test dataset for trying different approaches [maybe next step is to take 20 growth curves from each of our experiments and compare that as a test]
+> making a small test dataset for trying different approaches, taking the first 20 experimental units where growth rate was measured [here I was too tired/stupid to figure out how to loop it by person, hence the copy/pasted code :/]
 
 ```{r}
 
-IDs <- unique(df$unique_ID)
-test <- df %>% filter(unique_ID %in% IDs[1:20]) #trying to subset just the first 20 experimental units/growth curves
-length(unique(test$unique_ID)) #ok that worked
+A <- df %>% filter(researcher_ID=="AH")
+IDs <- unique(A$unique_ID)
+A_test <- A %>% filter(unique_ID %in% IDs[1:20])
+unique(A_test$unique_ID)
 
+B <- df %>% filter(researcher_ID=="IG")
+IDs <- unique(B$unique_ID)
+B_test <- B %>% filter(unique_ID %in% IDs[1:20])
+unique(B_test$unique_ID)
 
+# C <- df %>% filter(researcher_ID=="MG")
+# IDs <- unique(C$unique_ID)
+# C_test <- C %>% filter(unique_ID %in% IDs[1:20])
+# unique(C_test$unique_ID)
+
+D <- df %>% filter(researcher_ID=="Patrick")
+IDs <- unique(D$unique_ID)
+D_test <- D %>% filter(unique_ID %in% IDs[1:20])
+unique(D_test$unique_ID)
+
+E <- df %>% filter(researcher_ID=="Vanessa")
+IDs <- unique(E$unique_ID)
+E_test <- E %>% filter(unique_ID %in% IDs[1:20])
+unique(E_test$unique_ID)
+
+test <- bind_rows(A_test, B_test, D_test, E_test)
+unique(test$unique_ID)
 
 ```
 
-> already got this message trying to run even a subset of the data the first time....but worked eventually
+
+> we can have this as a supplementary figure about the computing power needed for fitting many growth rates...
 
 ![](R_session_fail.png)
 
+
+## logistic
+
 ```{r}
+summary(test$RFU_platereader)
+summary(test)
+
 p     <- c(y0 = 5, mumax = 0.5, K = 50)
 lower <- c(y0 = 0, mumax = -5,   K = 0)
 upper <- c(y0 = 30, mumax = 2,   K = 800)
@@ -230,6 +261,83 @@ plot(test_logistic_fits, log = "y")
 
 ```
 
+## spline
+
+```{r}
+
+test_spline_fits <- all_splines(RFU_platereader ~ time_days | unique_ID,
+                   data = test, spar=0.5)
+
+par(mfrow = c(4, 6))
+par(mar=c(1,2,1,1))
+plot(test_spline_fits, log = "y")
+
+test_spline_results <- results(test_spline_fits) %>% 
+  mutate(model = "spline") %>% 
+  select(well, mumax, model, r2)
+
+# test_logistic_results <- results(test_logistic_fits) %>% 
+#   mutate(model = "growthrates::logistic")%>% 
+#   select(unique_ID, mumax, model, r2)
+
+```
+
+
+## exponential
+
+```{r}
+
+p     <- c(y0 = 5, mumax = 0.5)
+lower <- c(y0 = 0, mumax = -5)
+upper <- c(y0 = 20, mumax = 5)
+
+test_exp_fits <- all_growthmodels(
+                   RFU_platereader ~ grow_exponential(time_days, parms) | unique_ID,
+                   data = test,
+                   p = p, lower = lower, upper = upper,
+                   log = "y", ncores=2)
+
+
+par(mfrow = c(4, 6))
+par(mar=c(1,2,1,1))
+plot(test_exp_fits, log = "y")
+
+
+test_exp_results <- results(test_exp_fits) %>% 
+  mutate(model = "exp")%>% 
+  select(well, mumax, model, r2)
+
+#AIC(test_exp_fits)    <- doesn't work
+
+test_exp_fits <- results(test_exp_fits) %>% 
+  mutate(model = "growthrates::exp")%>% 
+  select(unique_ID, mumax, model, r2)
+
+```
+
+
+```{r}
+
+start_time <- Sys.time()
+
+max_diffs <- test %>% 
+  mutate(logRFU = log(RFU_platereader)) %>% 
+  group_by(unique_ID, researcher_ID, system) %>% 
+  mutate(deltalogRFU = logRFU - dplyr::lag(logRFU, n=2)) %>% 
+  mutate(deltatime = time_days - dplyr::lag(time_days, n=2)) %>% 
+  mutate(mu = deltalogRFU/deltatime)
+
+max_rates <- max_diffs %>% 
+  group_by(unique_ID, researcher_ID, system) %>% 
+  summarize(mumax = max(mu, na.rm = TRUE)) %>% 
+  mutate(model="max_diff_2days") %>% 
+  mutate(r2 = "NA") %>%
+  mutate(r2=as.numeric(r2))
+
+end_time <- Sys.time()
+maxdiff_time <- end_time - start_time
+
+```
 
 # Growth rate calculations for full dataset
 
@@ -274,7 +382,7 @@ max_rates %>% ggplot(aes(mumax, fill = researcher_ID))+
 
 - combining data works pretty well overall!
 - differences in formatting stuff like commas vs periods and different column names are minor problems but can be fixed
-- running the full dataset might in the `growthrates` package might kill my computer
+- running the full dataset in the `growthrates` package might kill my computer
 
 ```{r}
 
@@ -302,3 +410,6 @@ end_time - start_time
 get.gr.lagsat(test$time_days, test$RFU_platereader)
 
 ```
+
+
+
