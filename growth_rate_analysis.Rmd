@@ -24,6 +24,7 @@ library(growthrates)
 library(knitr)
 library(growthrates)
 library(googledrive)
+library(cowplot)
 
 theme_set(theme_bw()+
             theme(axis.text=element_text(size=16),
@@ -42,6 +43,8 @@ theme_set(theme_bw()+
 library(growthTools)
 
 ```
+
+## Code for combining files, **skip this if using compiled dataset**
 
 > create list of files to combine
 
@@ -128,8 +131,19 @@ df <- df %>%
 
 df <- left_join(df, metadata)
 
+#write_csv(df, "combined_data.csv") write combined dataset to csv
+
 ```
 
+# **Start here if using full combined dataset**
+
+```{r}
+
+df <- read_csv("combined_data.csv")
+
+df <- df %>% mutate(log_RFU_platereader = log(RFU_platereader+1))
+
+```
 
 >check out the combined data in several ways to make sure it all makes sense and was imported correctly
 
@@ -144,6 +158,9 @@ kable(summary_data)
 length(unique(df$unique_ID)) #how many total growth rate estimates will we have?
 df %>% group_by(researcher_ID) %>% 
   summarize(count = length(unique(unique_ID)))#look at how many growth rates we'll have per person
+
+#I don't think 0s should exist and don't work with growthrates package so maybe these are a mistake?
+df %>% filter(RFU_platereader==0)
 
 ```
 
@@ -190,31 +207,47 @@ df %>%
 
 A <- df %>% filter(researcher_ID=="AH")
 IDs <- unique(A$unique_ID)
-A_test <- A %>% filter(unique_ID %in% IDs[1:20])
+A_test <- A %>% filter(unique_ID %in% IDs[1:10])
 unique(A_test$unique_ID)
 
 B <- df %>% filter(researcher_ID=="IG")
 IDs <- unique(B$unique_ID)
-B_test <- B %>% filter(unique_ID %in% IDs[1:20])
+B_test <- B %>% filter(unique_ID %in% IDs[1:10])
 unique(B_test$unique_ID)
+
 
 # C <- df %>% filter(researcher_ID=="MG")
 # IDs <- unique(C$unique_ID)
-# C_test <- C %>% filter(unique_ID %in% IDs[1:20])
+# C_test <- C %>% filter(unique_ID %in% IDs[1:10])
 # unique(C_test$unique_ID)
 
 D <- df %>% filter(researcher_ID=="Patrick")
 IDs <- unique(D$unique_ID)
-D_test <- D %>% filter(unique_ID %in% IDs[1:20])
+D_test <- D %>% filter(unique_ID %in% IDs[1:10])
 unique(D_test$unique_ID)
 
 E <- df %>% filter(researcher_ID=="Vanessa")
 IDs <- unique(E$unique_ID)
-E_test <- E %>% filter(unique_ID %in% IDs[1:20])
+E_test <- E %>% filter(unique_ID %in% IDs[1:10])
 unique(E_test$unique_ID)
 
 test <- bind_rows(A_test, B_test, D_test, E_test)
 unique(test$unique_ID)
+summary(test)
+test %>% count(unique_ID)
+
+#0s still a problem so removing those
+test %>% filter(RFU_platereader==0)
+test <- filter(test, RFU_platereader>0)
+
+```
+
+# !! include this chunk only if you want to turn 'test' into full dataset and run >3000 growth rate fits!
+
+```{r}
+
+# test <- df %>% 
+#   filter(RFU_platereader>0)
 
 ```
 
@@ -223,98 +256,167 @@ unique(test$unique_ID)
 
 ![](R_session_fail.png)
 
+## `growthrates` spline
 
-## logistic
+> here the splines function doesn't let you log-transform the y axis as with others, not sure whether to use logRFU here?
+
+```{r}
+
+start_time <- Sys.time()
+
+test_spline_fits <- all_splines(RFU_platereader ~ time_days | unique_ID + researcher_ID, data = test, spar=0.5)
+
+par(mfrow = c(4, 6))
+par(mar=c(1,2,1,1))
+#plot(test_spline_fits, log = "y")
+
+end_time <- Sys.time()
+
+elapsed_time_spline <- end_time - start_time
+
+test_spline_results <- results(test_spline_fits) %>% 
+  mutate(model = "growthrates::spline",
+         elapsed_time=elapsed_time_spline) %>% 
+  select(researcher_ID, unique_ID, mumax, model, r2, elapsed_time)
+
+```
+
+
+
+## `growthrates` logistic
+
+> try this with and without the lower and upper parameter values, as these are optional??
 
 ```{r}
 summary(test$RFU_platereader)
 summary(test)
 
-p     <- c(y0 = 5, mumax = 0.5, K = 50)
-lower <- c(y0 = 0, mumax = -5,   K = 0)
-upper <- c(y0 = 30, mumax = 2,   K = 800)
-
 start_time <- Sys.time()
+
+# setting a huge range of parameters to fit all data with varying RFU
+p     <- c(y0 = 10, mumax = 0.5, K = 100)
+lower <- c(y0 = 0, mumax = -5,   K = 0)
+upper <- c(y0 = 100, mumax = 5,   K = 5000)
+
 test_logistic_fits <- all_growthmodels(
-                   RFU_platereader ~ grow_logistic(time_days, parms) | unique_ID,
+                   RFU_platereader ~ grow_logistic(time_days, parms) | unique_ID +researcher_ID,
                    data = test,
                    p = p, lower = lower, upper = upper,
-                   log = "y", ncores=2)
+                   log = "y")
+
 end_time <- Sys.time()
-logistic_test_time <- end_time - start_time
-logistic_test_time
+
+elapsed_time_logistic <- end_time - start_time
 
 test_logistic_results <- results(test_logistic_fits) %>% 
-  mutate(model = "growthrates::logistic")%>% 
-  select(unique_ID, mumax, model, r2)
+  mutate(model = "growthrates::logistic",
+         elapsed_time=elapsed_time_logistic) %>% 
+  select(researcher_ID, unique_ID, mumax, model, r2, elapsed_time)
 
 ```
 
-> that approach took `r round(as.numeric(logistic_test_time), 2)` seconds to calculate `r length(unique(test$unique_ID))` growth rates
+> that approach took `r round(as.numeric(elapsed_time_logistic), 2)` seconds to calculate `r length(unique(test$unique_ID))` growth rates
 
 > plotting above curves
 
 ```{r}
+
 par(mfrow = c(4, 6))
 par(mar=c(1,2,1,1))
-plot(test_logistic_fits, log = "y")
+#plot(test_logistic_fits, log = "y")
 
 ```
 
-## spline
+## `growthrates` easy linear
+
+> this gives an error message about object m missing, no idea what's up with that
 
 ```{r}
 
-test_spline_fits <- all_splines(RFU_platereader ~ time_days | unique_ID,
-                   data = test, spar=0.5)
+test_easylinear_fits <- all_easylinear(RFU_platereader ~ time_days|unique_ID+researcher_ID,
+                                       h =3, #change h to change width of window used
+                                       data = test)
 
 par(mfrow = c(4, 6))
 par(mar=c(1,2,1,1))
-plot(test_spline_fits, log = "y")
-
-test_spline_results <- results(test_spline_fits) %>% 
-  mutate(model = "spline") %>% 
-  select(well, mumax, model, r2)
-
-# test_logistic_results <- results(test_logistic_fits) %>% 
-#   mutate(model = "growthrates::logistic")%>% 
-#   select(unique_ID, mumax, model, r2)
+plot(test_easylinear_fits, log = "y")
 
 ```
 
 
-## exponential
+## `growthrates` exponential
 
 ```{r}
+start_time <- Sys.time()
 
 p     <- c(y0 = 5, mumax = 0.5)
 lower <- c(y0 = 0, mumax = -5)
 upper <- c(y0 = 20, mumax = 5)
 
 test_exp_fits <- all_growthmodels(
-                   RFU_platereader ~ grow_exponential(time_days, parms) | unique_ID,
+                   RFU_platereader ~ grow_exponential(time_days, parms) | unique_ID + researcher_ID,
                    data = test,
                    p = p, lower = lower, upper = upper,
-                   log = "y", ncores=2)
+                   log = "y")
 
+end_time <- Sys.time()
+
+elapsed_time_exp <- end_time - start_time
+
+test_exp_results <- results(test_exp_fits) %>% 
+  mutate(model = "growthrates::exp",
+         elapsed_time=elapsed_time_exp) %>% 
+  select(researcher_ID, unique_ID, mumax, model, r2, elapsed_time)
 
 par(mfrow = c(4, 6))
 par(mar=c(1,2,1,1))
-plot(test_exp_fits, log = "y")
-
-
-test_exp_results <- results(test_exp_fits) %>% 
-  mutate(model = "exp")%>% 
-  select(well, mumax, model, r2)
-
-#AIC(test_exp_fits)    <- doesn't work
-
-test_exp_fits <- results(test_exp_fits) %>% 
-  mutate(model = "growthrates::exp")%>% 
-  select(unique_ID, mumax, model, r2)
+#plot(test_exp_fits, log = "y")
 
 ```
 
+
+
+## `growthTools`
+
+```{r}
+
+start_time <- Sys.time()
+
+
+# estimate the best growth model for all 
+growth_rates <- test %>%
+  group_by(unique_ID, researcher_ID) %>%
+  do(grs = get.growth.rate(x = .$time_days, y = .$log_RFU_platereader, 
+                           methods = c("linear", "lag", "sat", "flr", "lagsat"),
+                           id = .$unique_ID, plot.best.Q = T, fpath = NA))
+
+end_time <- Sys.time()
+
+elapsed_time_growthtools <- end_time - start_time
+
+# get important parameters of the models
+summary_growth_rates <- growth_rates %>% 
+  summarise(unique_ID, researcher_ID, 
+            mu = grs$best.slope, # mu of the best model
+            best_model = grs$best.model, # name of the best model
+            best.model_r2 = grs$best.model.rsqr, # r squared of the best model
+            best_se = grs$best.se, # standard error of the best model
+            contents = grs$best.model.contents) # best model
+
+
+#renaming some things to match headers from growthrates package
+growthtools_test <- summary_growth_rates %>% 
+  rename(mumax=mu) %>%
+  mutate(model = paste("growthtools::", best_model),
+         r2=best.model_r2,
+         elapsed_time = elapsed_time_growthtools) %>% 
+  select(researcher_ID, unique_ID, mumax, model, r2, elapsed_time)
+  
+
+```
+
+
+## manual - max increase over 2 days
 
 ```{r}
 
@@ -322,7 +424,7 @@ start_time <- Sys.time()
 
 max_diffs <- test %>% 
   mutate(logRFU = log(RFU_platereader)) %>% 
-  group_by(unique_ID, researcher_ID, system) %>% 
+  group_by(unique_ID, researcher_ID) %>% 
   mutate(deltalogRFU = logRFU - dplyr::lag(logRFU, n=2)) %>% 
   mutate(deltatime = time_days - dplyr::lag(time_days, n=2)) %>% 
   mutate(mu = deltalogRFU/deltatime)
@@ -332,12 +434,64 @@ max_rates <- max_diffs %>%
   summarize(mumax = max(mu, na.rm = TRUE)) %>% 
   mutate(model="max_diff_2days") %>% 
   mutate(r2 = "NA") %>%
-  mutate(r2=as.numeric(r2))
+  mutate(r2=as.numeric(r2)) %>% 
+  ungroup()
 
 end_time <- Sys.time()
 maxdiff_time <- end_time - start_time
 
+max_rates <- max_rates %>% 
+  mutate(elapsed_time = maxdiff_time)
+
 ```
+
+## Combining all data
+
+
+```{r}
+combined_test <- bind_rows(test_spline_results,
+                           test_logistic_results,
+                           test_exp_results,
+                           growthtools_test,
+                           max_rates)
+
+summary(combined_test)
+
+write_csv(combined_test, "combinedtest.csv")
+
+```
+
+
+## plots of combined data
+
+```{r}
+
+A <- combined_test %>% 
+  ggplot(aes(model, r2))+
+  geom_boxplot(fill = "dark green")+
+  coord_flip()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+
+B <- combined_test %>% 
+  ggplot(aes(model, mumax))+
+  geom_boxplot(fill = "dark green")+
+  coord_flip()
+
+plot_grid(B, A, vjust = TRUE, rel_widths = c(2,1))
+
+combined_test %>% 
+  ggplot(aes(model, elapsed_time))+
+  coord_flip()+
+  geom_bar(stat = 'identity', fill = "dark green")+
+  ylab('Elapsed time (seconds)')
+
+```
+
+
+
+
 
 # Growth rate calculations for full dataset
 
@@ -378,11 +532,6 @@ max_rates %>% ggplot(aes(mumax, fill = researcher_ID))+
 
 ```
 
-> notes so far:
-
-- combining data works pretty well overall!
-- differences in formatting stuff like commas vs periods and different column names are minor problems but can be fixed
-- running the full dataset in the `growthrates` package might kill my computer
 
 ```{r}
 
@@ -390,6 +539,14 @@ knitr::knit_exit()
 
 
 ```
+
+
+> notes so far:
+
+- combining data works pretty well overall!
+- differences in formatting stuff like commas vs periods and different column names are minor problems but can be fixed
+- running the full dataset in the `growthrates` package might kill my computer
+
 
 > one way to measure time taken for e.g. growth rate calculations
 
@@ -401,15 +558,3 @@ end_time <- Sys.time()
 end_time - start_time
 
 ```
-
-
-> test with growthTools
-
-```{r}
-
-get.gr.lagsat(test$time_days, test$RFU_platereader)
-
-```
-
-
-
