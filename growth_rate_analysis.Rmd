@@ -25,6 +25,9 @@ library(knitr)
 library(growthrates)
 library(googledrive)
 library(cowplot)
+library(broom)
+library(growthcurver)
+
 
 theme_set(theme_bw()+
             theme(axis.text=element_text(size=16),
@@ -388,9 +391,12 @@ growth_rates <- test %>%
   group_by(unique_ID, researcher_ID) %>%
   do(grs = get.growth.rate(x = .$time_days, y = .$log_RFU_platereader, 
                            methods = c("linear", "lag", "sat", "flr", "lagsat"),
-                           id = .$unique_ID, plot.best.Q = T, fpath = NA))
+                           model.selection = c("AICc"),
+                           id = .$unique_ID, plot.best.Q = F, fpath = NA))
 
 end_time <- Sys.time()
+
+growth_rates$ictab
 
 elapsed_time_growthtools <- end_time - start_time
 
@@ -414,6 +420,90 @@ growthtools_test <- summary_growth_rates %>%
   
 
 ```
+
+## sequential fit/sliding window
+
+```{r}
+
+# phosphate_abundances %>% 
+#   ggplot(aes(x = days, y = log(RFU), color = phosphate_concentration, group = well_plate)) + geom_point() +
+#   # geom_smooth(method = "lm") +
+#   geom_line() +
+#   facet_wrap( ~ population)
+
+
+
+start_time <- Sys.time()
+
+# PT: what exactly is the top_N(-x) doing here? and also the map_df? and what exactly does iteration mean?
+
+fitting_window <- function(x) {
+  growth_rates <- test %>% 
+    top_n(n = -x, wt = time_days) %>% 
+    group_by(unique_ID, researcher_ID, system) %>% 
+    do(tidy(lm(log(RFU_platereader) ~ time_days, data = .))) %>% 
+    mutate(number_of_points = x) %>% 
+    ungroup()
+}
+
+fitting_window_log_linear <- function(x) {
+  growth_rates <- test %>% 
+    group_by(unique_ID, researcher_ID, system) %>% 
+    top_n(n = -x, wt = time_days) %>% 
+    do(tidy(lm(log(RFU_platereader) ~ time_days, data = .))) %>% 
+    mutate(number_of_points = x) %>% 
+    ungroup()
+}
+
+windows <- seq(3,7, by = 1) ## these are the minimum and maximum number 
+                            #  of time points included in the window
+
+multi_fits <- windows %>% #this does not work for any growth curves....
+  map_df(fitting_window, .id = "iteration")
+
+multi_fits <- windows %>% #this works for almost all growth curves
+  map_df(fitting_window_log_linear, .id = "iteration")
+
+
+multi_fits %>% 
+  filter(term == "time_days") %>% 
+  ggplot(aes(x = number_of_points, y = estimate, group = unique_ID, color = researcher_ID)) + geom_point() + geom_line()
+
+exp_fits_top <- multi_fits %>%
+  filter(term == "time_days") %>% 
+  group_by(unique_ID) %>% 
+  top_n(n = 1, wt = estimate)
+
+exp_fits_top_SD <- multi_fits %>%
+  filter(term == "time_days") %>% 
+  group_by(unique_ID) %>% 
+  top_n(n = 1, wt = std.error) %>% 
+  rename(estimateSD = estimate)
+
+end_time <- Sys.time()
+elapsed_time_sequential <- end_time-start_time
+
+both <- left_join(exp_fits_top, exp_fits_top_SD, by = "unique_ID")
+
+ggplot(both, aes(estimate, estimateSD))+
+  geom_point()
+
+exp_fits_top %>% 
+  filter(term =="time_days") %>% 
+  ggplot(aes(estimate, fill = researcher_ID))+
+    geom_density(alpha = 0.7)
+
+
+sequential_fit <- exp_fits_top %>% 
+  mutate(model="sequential_fit") %>% 
+  mutate(r2 = "NA") %>%# can get Rsquare, just ignoring for now
+  mutate(r2=as.numeric(r2)) %>% 
+  rename(mumax = estimate) %>% 
+  mutate(elapsed_time = elapsed_time_sequential)
+
+
+```
+
 
 
 ## manual - max increase over 2 days
@@ -453,7 +543,8 @@ combined_test <- bind_rows(test_spline_results,
                            test_logistic_results,
                            test_exp_results,
                            growthtools_test,
-                           max_rates)
+                           max_rates,
+                           sequential_fit)
 
 summary(combined_test)
 
@@ -539,6 +630,14 @@ knitr::knit_exit()
 
 
 ```
+
+
+# To do:
+
+- add AIC data to everything possible
+- add R2 to sequential fits
+- 
+
 
 
 > notes so far:
