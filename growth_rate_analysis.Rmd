@@ -263,7 +263,7 @@ test <- filter(test, RFU_platereader>0)
 
 > here the splines function doesn't let you log-transform the y axis as with others, not sure whether to use logRFU here?
 
-```{r}
+```{r cache=TRUE}
 
 start_time <- Sys.time()
 
@@ -290,7 +290,7 @@ test_spline_results <- results(test_spline_fits) %>%
 
 > try this with and without the lower and upper parameter values, as these are optional??
 
-```{r}
+```{r cache=TRUE}
 summary(test$RFU_platereader)
 summary(test)
 
@@ -322,7 +322,7 @@ test_logistic_results <- results(test_logistic_fits) %>%
 
 > plotting above curves
 
-```{r}
+```{r cache=TRUE}
 
 par(mfrow = c(4, 6))
 par(mar=c(1,2,1,1))
@@ -334,11 +334,15 @@ par(mar=c(1,2,1,1))
 
 > this gives an error message about object m missing, no idea what's up with that
 
-```{r}
+```{r cache=TRUE}
 
 test_easylinear_fits <- all_easylinear(RFU_platereader ~ time_days|unique_ID+researcher_ID,
                                        h =3, #change h to change width of window used
                                        data = test)
+
+easylinear_model <- all_easylinear(RFU_platereader ~ time_hours | unique_ID,
+                                       data = growth_data, h = 3) # parameter h indicates how many datapoints are used to estimate the slope, it can be increased depending on the data
+
 
 par(mfrow = c(4, 6))
 par(mar=c(1,2,1,1))
@@ -349,7 +353,7 @@ plot(test_easylinear_fits, log = "y")
 
 ## `growthrates` exponential
 
-```{r}
+```{r cache=TRUE}
 start_time <- Sys.time()
 
 p     <- c(y0 = 5, mumax = 0.5)
@@ -420,6 +424,24 @@ growthtools_test <- summary_growth_rates %>%
   
 
 ```
+
+## Growthcurver package
+
+```{r}
+
+test_wide <- test %>% 
+  pivot_wider(names_from = unique_ID)
+
+,
+              values_from = c("RFU_platereader", "time_days"))
+
+head(test_wide)
+
+
+
+```
+
+
 
 ## sequential fit/sliding window
 
@@ -501,6 +523,7 @@ sequential_fit <- exp_fits_top %>%
   rename(mumax = estimate) %>% 
   mutate(elapsed_time = elapsed_time_sequential)
 
+#write_csv(sequential_fit, "sequential_fit.csv")
 
 ```
 
