@@ -1,0 +1,287 @@
+---
+title: "growthcurver test"
+author: "Patrick Thomas"
+date: "2/1/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Notes:
+
+- I don't like it
+- it's super annoying
+- it forces you to put your data in wide non-tidy format, so our data would have >3000 columns, not a huge problem just more unnecessary steps
+- it only has the logistic function
+- time points for different experimental units have to be exactly the same- so as far as I can tell it is impossible to include our data in their required format without looping through every single unique_ID we have
+- need to rename time column to "time" or it doesn't work
+- basically, it's only useful for well plate assays where growth is very uniform and taking the exact same time points for all your treatments is easy
+
+
+```{r}
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+```
+
+
+```{r}
+
+library(tidyverse)
+library(growthcurver)
+library(readxl)
+
+d <- growthdata
+
+```
+
+# Example from growthcurver vignette
+
+> Wide format needed:
+
+```{r}
+head(d)
+```
+
+> Fit one growth curve and look at output:
+
+```{r}
+
+gc_fit <- SummarizeGrowth(d$time, d$A1)
+
+gc_fit
+
+plot(gc_fit)
+
+gc_fit$vals
+
+str(gc_fit$vals)
+
+gc_fit$vals$r
+
+```
+
+> Fit one plate (or many curves) at a time and check for notes on bad fits:
+
+```{r}
+gc_out <- SummarizeGrowthByPlate(d)
+
+head(gc_out)
+gc_out %>% filter(note != "") 
+
+```
+
+
+# Test using our data
+
+```{r include=FALSE}
+
+df <- read_csv("combined_data.csv")
+
+
+A <- df %>% filter(researcher_ID=="AH")
+IDs <- unique(A$unique_ID)
+A_test <- A %>% filter(unique_ID %in% IDs[1:10])
+unique(A_test$unique_ID)
+
+B <- df %>% filter(researcher_ID=="IG")
+IDs <- unique(B$unique_ID)
+B_test <- B %>% filter(unique_ID %in% IDs[1:10])
+unique(B_test$unique_ID)
+
+
+# C <- df %>% filter(researcher_ID=="MG")
+# IDs <- unique(C$unique_ID)
+# C_test <- C %>% filter(unique_ID %in% IDs[1:10])
+# unique(C_test$unique_ID)
+
+D <- df %>% filter(researcher_ID=="Patrick")
+IDs <- unique(D$unique_ID)
+D_test <- D %>% filter(unique_ID %in% IDs[1:10])
+unique(D_test$unique_ID)
+
+E <- df %>% filter(researcher_ID=="Vanessa")
+IDs <- unique(E$unique_ID)
+E_test <- E %>% filter(unique_ID %in% IDs[1:10])
+unique(E_test$unique_ID)
+
+test <- bind_rows(A_test, B_test, D_test, E_test)
+unique(test$unique_ID)
+summary(test)
+test %>% count(unique_ID)
+
+#0s still a problem so removing those
+test %>% filter(RFU_platereader==0)
+test <- filter(test, RFU_platereader>0)
+
+#write_csv(test, "test.csv")
+
+```
+
+
+```{r include=FALSE}
+
+# dim(df)
+# names(df)
+# str(df)
+# summary(df)
+# head(df)
+
+```
+
+
+> pivoting reveals some duplicated data points, not sure what's up with those, but they look identical so I will just collapse those into one when pivoting
+
+```{r}
+test_wide <- test %>% 
+  select(unique_ID, time_days, RFU_platereader) %>% 
+  rename(time = time_days) %>% 
+  pivot_wider(names_from = unique_ID,
+              values_fn = mean,
+              values_from = RFU_platereader)
+```
+
+> also that didn't work at all >:(
+
+```{r}
+gc_out <- SummarizeGrowthByPlate(test_wide)
+head(gc_out)
+gc_out %>% filter(note != "") 
+```
+
+
+> even with subset of one person's data it doesn't work - only seems to work when observations are all for the exact same time points
+
+```{r}
+A_wide <- A %>% 
+  select(unique_ID, time_days, RFU_platereader) %>% 
+  #filter(unique_ID %in% c("AH_2020_217", "AH_2020_221", "AH_2020_222")) %>% 
+  rename(time = time_days) %>% 
+  pivot_wider(names_from = unique_ID,
+              values_fn = mean,
+              values_from = RFU_platereader)
+
+gc_out <- SummarizeGrowthByPlate(A_wide)
+head(gc_out)
+```
+
+> **This is the only way I got it to work- when I used a tiny subset of data with the exact same time points corresponding to several experimental units...**
+
+```{r}
+A_wide <- A %>% 
+  select(unique_ID, time_days, RFU_platereader) %>% 
+  filter(unique_ID %in% c("AH_2020_217", "AH_2020_221", "AH_2020_222")) %>% 
+  rename(time = time_days) %>% 
+  pivot_wider(names_from = unique_ID,
+              values_fn = mean,
+              values_from = RFU_platereader)
+
+gc_out <- SummarizeGrowthByPlate(A_wide)
+head(gc_out)
+
+```
+
+
+# For more "advanced users" to customize things, this huge chunk of code is required. At this point, what's the points of even having a package to help? It also requires data to be in the same extremely 
+
+```{r}
+
+# As in the simple example, load the package and the data. 
+library(growthcurver)
+d <- growthdata
+
+# Let's create an output data frame to store the results in. 
+# We'll create it so that it is the right size (it's faster this way!), 
+# but leave it empty.
+num_analyses <- length(names(d)) - 1
+d_gc <- data.frame(sample = character(num_analyses),
+                   k = numeric(num_analyses),
+                   n0  = numeric(num_analyses),
+                   r = numeric(num_analyses),
+                   t_mid = numeric(num_analyses),
+                   t_gen = numeric(num_analyses),
+                   auc_l = numeric(num_analyses),
+                   auc_e = numeric(num_analyses),
+                   sigma = numeric(num_analyses),
+                   stringsAsFactors = FALSE)
+
+# Truncate or trim the input data to observations occuring in the first 20 hours.
+# Remember that the times in these sample data are reported in hours. To use  
+# minutes (or to trim at a different time), change the next line of code. 
+# For example, if you still would like to trim at 20 hours, but your time data 
+# are reported in minutes use: trim_at_time <- 20 * 60
+trim_at_time <- 20   
+
+# Now, loop through all of the columns in the data frame. For each column,
+# run Growthcurver, save the most useful metrics in the output data frame,
+# and make a plot of all the growth curve data and their best fits.
+
+# First, create a plot for each of the wells in the 96-well plate.
+# Uncomment the next line to save the plots from your 96-well plate to a 
+# pdf file in the working directory.
+# pdf("growthcurver.pdf", height = 8.5, width = 11)
+par(mfcol = c(8,12))
+par(mar = c(0.25,0.25,0.25,0.25))
+y_lim_max <- max(d[,setdiff(names(d), "time")]) - min(d[,setdiff(names(d), "time")])
+
+n <- 1    # keeps track of the current row in the output data frame
+for (col_name in names(d)) {
+  
+  # Don't process the column called "time". 
+  # It contains time and not absorbance data.
+  if (col_name != "time") {
+
+    # Create a temporary data frame that contains just the time and current col
+    d_loop <- d[, c("time", col_name)]
+    
+    # Do the background correction.
+    # Background correction option 1: subtract the minimum value in a column
+    #                                 from all measurements in that column
+        min_value <- min(d_loop[, col_name])
+    d_loop[, col_name] <- d_loop[, col_name] - min_value
+    # Background correction option 2: subtract the mean value of blank wells
+    #                                 over the course the experiment
+    #                                 (Replace B2, D8, G11 with the column
+    #                                  names of your media-only wells)
+    #d$blank <- apply(d[, c("B2", "D8", "G11")], 1, mean)
+    #d$A1 <- d$A1 - d$blank
+    
+    # Now, call Growthcurver to calculate the metrics using SummarizeGrowth
+    gc_fit <- SummarizeGrowth(data_t = d_loop[, "time"], 
+                              data_n = d_loop[, col_name],
+                              t_trim = trim_at_time,
+                              bg_correct = "none")
+    
+    # Now, add the metrics from this column to the next row (n) in the 
+    # output data frame, and increment the row counter (n)
+    d_gc$sample[n] <- col_name
+    d_gc[n, 2:9] <- c(gc_fit$vals$k,
+                      gc_fit$vals$n0,
+                      gc_fit$vals$r,
+                      gc_fit$vals$t_mid,
+                      gc_fit$vals$t_gen,
+                      gc_fit$vals$auc_l,
+                      gc_fit$vals$auc_e,
+                      gc_fit$vals$sigma)
+    n <- n + 1
+    
+    # Finally, plot the raw data and the fitted curve
+    # Here, I'll just print some of the data points to keep the file size smaller
+    n_obs <- length(gc_fit$data$t)
+    idx_to_plot <- 1:20 / 20 * n_obs
+    plot(gc_fit$data$t[idx_to_plot], gc_fit$data$N[idx_to_plot], 
+         pch = 20, 
+         xlim = c(0, trim_at_time), 
+         ylim = c(0, y_lim_max),
+         cex = 0.6, xaxt = "n", yaxt = "n")
+     text(x = trim_at_time / 4, y = y_lim_max, labels = col_name, pos = 1)
+     lines(gc_fit$data$t, predict(gc_fit$model), col = "red")
+  }
+}
+
+```
+
+
+```{r}
+```
+

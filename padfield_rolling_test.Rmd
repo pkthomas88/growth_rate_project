@@ -1,0 +1,311 @@
+---
+title: "Padfield rolling regression"
+author: "Patrick Thomas"
+date: "2/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# load packages
+library(tidyverse) #install.packages(tidyverse)
+library(zoo) #install.packages(zoo)
+library(broom) #install.packages(broom)
+library(growthcurver) # install.packages(growthcurver)
+library(nls.multstart) # install.packages(nls.multstart)
+#remotes::install_github('padpadpadpad/MicrobioUoE')
+library(MicrobioUoE)
+# load example data
+d <- growthcurver::growthdata %>%
+  gather(., well, od, -time) %>%
+  mutate(ln_od = log(od),
+         log10_od = log10(od))
+
+# have a look at the data
+glimpse(d)
+```
+
+
+# test with example data
+
+
+## gompertz fit example
+
+```{r}
+
+# filter for just a single well
+d_a1 <- filter(d, well == 'A1')
+
+# define gompertz growth model
+gompertz <- function(log10_nmax, log10_n0, mumax, t, lag){
+  log10_n0 + (log10_nmax - log10_n0) * exp(-exp(mumax * exp(1) * (lag - t)/((log10_nmax - log10_n0) * log(10)) + 1))
+}
+
+# fit gompertz model
+fit_gomp <- nls.multstart::nls_multstart(log10_od ~ gompertz(log10_nmax, log10_n0, mumax, t = time, lag),
+           data = d_a1,
+           start_lower = c(log10_nmax = -0.75, log10_n0 = -3, mumax = 0, lag = 0),
+           start_upper = c(log10_nmax = 0.5, log10_n0 = -1, mumax = 10, lag = 25),
+           lower = c(log10_nmax = -0.6, log10_n0 = -2, mumax = 0, lag = 0),
+           iter = 500,
+           supp_errors = 'Y')
+
+# get predictions
+gomp_preds <- augment(fit_gomp)
+
+# plot on original scale
+ggplot(d_a1, aes(time, od)) +
+  geom_line(aes(time, 10^.fitted), gomp_preds, col = 'red') +
+  geom_point() +
+  theme_bw(base_size = 16) +
+  labs(x = 'time (hours)',
+       y = 'OD') +
+  annotate(geom = 'text', x = 0, y = 0.37, label = paste('µ = ', round(coef(fit_gomp)[3], 2), ' hr-1', sep = ''), hjust = 0, size = MicrobioUoE::pts(16))
+
+```
+
+## rolling regression, single well example
+
+```{r}
+# create the rolling regression function
+roll_regress <- function(x){
+  temp <- data.frame(x)
+  mod <- lm(temp)
+  temp <- data.frame(slope = coef(mod)[[2]],
+                     slope_lwr = confint(mod)[2, ][[1]],
+                     slope_upr = confint(mod)[2, ][[2]],
+                     intercept = coef(mod)[[1]],
+                     rsq = summary(mod)$r.squared, stringsAsFactors = FALSE)
+  return(temp)
+}
+
+# define window - here every ~1.5 hours
+num_points = ceiling(1.5*60/(60*0.167)) 
+
+# run rolling regression on ln od ~ time
+models <- d_a1 %>%
+  do(cbind(model = select(., ln_od, time) %>% 
+           zoo::rollapplyr(width = num_points, roll_regress, by.column = FALSE, fill = NA, align = 'center'),
+           time = select(., time),
+           ln_od = select(., ln_od))) %>%
+  rename_all(., gsub, pattern = 'model.', replacement = '')
+
+# create predictions
+preds <- models %>%
+  filter(., !is.na(slope)) %>%
+  group_by(time) %>%
+  do(data.frame(time2 = c(.$time - 2, .$time + 2))) %>%
+  left_join(., models) %>%
+  mutate(pred = (slope*time2) + intercept)
+
+```
+
+
+## plot predicted slopes at each point
+
+```{r}
+
+# calculate the exponential growth rate
+growth_rate <- filter(models, slope == max(slope, na.rm = TRUE))
+
+# plot rolling regression
+ggplot(d_a1, aes(time, ln_od)) +
+  geom_point() +
+  geom_line(aes(time2, pred, group = time), col = 'red', preds, alpha = 0.5) +
+  theme_bw(base_size = 16) +
+  geom_segment(aes(x = time, y = -3, xend = time, yend = ln_od), growth_rate) +
+  geom_segment(aes(x = 0, y = ln_od, xend = time, yend = ln_od), growth_rate) +
+  annotate(geom = 'text', x = 0, y = -1, label = paste('µ = ', round(growth_rate$slope, 2), ' hr-1\n95%CI:(',round(growth_rate$slope_lwr, 2), '-', round(growth_rate$slope_upr, 2), ')', sep = ''), hjust = 0, size = MicrobioUoE::pts(16)) +
+  labs(x = 'time (hours)',
+       y = 'OD')
+
+```
+
+
+## rolling regression, grouped by well
+
+```{r}
+# run rolling regression on ln od_cor ~ time
+models <- d %>%
+  group_by(well) %>%
+  do(cbind(model = select(., ln_od, time) %>% 
+           zoo::rollapplyr(width = num_points, roll_regress, by.column = FALSE, fill = NA, align = 'center'),
+           time = select(., time),
+           ln_od = select(., ln_od))) %>%
+  rename_all(., gsub, pattern = 'model.', replacement = '')
+
+# calculate growth rate for each one
+growth_rates <- models %>%
+  filter(slope == max(slope, na.rm = TRUE)) %>%
+  ungroup()
+
+glimpse(growth_rates)
+
+```
+
+
+# our data
+
+```{r}
+
+test <- read_csv("test.csv") %>% 
+  mutate(lnRFU = log(RFU_platereader))
+glimpse(test)
+
+test1 <- filter(test, unique_ID=="AH_2020_196")
+#test1 <- filter(test, unique_ID=="Vanessa_expA_1")
+
+# create the rolling regression function
+roll_regress <- function(x){
+  temp <- data.frame(x)
+  mod <- lm(temp)
+  temp <- data.frame(slope = coef(mod)[[2]],
+                     slope_lwr = confint(mod)[2, ][[1]],
+                     slope_upr = confint(mod)[2, ][[2]],
+                     intercept = coef(mod)[[1]],
+                     rsq = summary(mod)$r.squared, stringsAsFactors = FALSE)
+  return(temp)
+}
+
+# define window - make it go across 3 points??
+num_points = 3
+
+# run rolling regression on ln od ~ time
+models <- test1 %>%
+  do(cbind(model = select(., lnRFU, time_days) %>% 
+           zoo::rollapplyr(width = num_points, roll_regress, by.column = FALSE, fill = NA, align = 'center'),
+           time_days = select(., time_days),
+           lnRFU = select(., lnRFU))) %>%
+  rename_all(., gsub, pattern = 'model.', replacement = '')
+
+# create predictions
+preds <- models %>%
+  filter(., !is.na(slope)) %>%
+  group_by(time_days) %>%
+  do(data.frame(time2 = c(.$time_days - 4, .$time_days + 4))) %>%# changed this to 1 day
+  left_join(., models) %>%
+  mutate(pred = (slope*time2) + intercept)
+
+
+# calculate the exponential growth rate
+growth_rate <- filter(models, slope == max(slope, na.rm = TRUE))
+
+# plot rolling regression
+ggplot(test1, aes(time_days, lnRFU)) +
+  geom_point() +
+  geom_line(aes(time2, pred, group = time_days), col = 'red', preds, alpha = 0.5) +
+  theme_bw(base_size = 16) +
+  geom_segment(aes(x = time_days, y = -3, xend = time_days, yend = lnRFU), growth_rate) +
+  geom_segment(aes(x = 0, y = lnRFU, xend = time_days, yend = lnRFU), growth_rate) +
+  annotate(geom = 'text', x = 0, y = -1, label = paste('µ = ', round(growth_rate$slope, 2), ' day-1\n95%CI:(',round(growth_rate$slope_lwr, 2), '-', round(growth_rate$slope_upr, 2), ')', sep = ''), hjust = 0, size = MicrobioUoE::pts(16)) +
+  labs(x = 'time (days)',
+       y = 'RFU')
+
+```
+
+
+
+
+```{r}
+
+# run rolling regression on ln od_cor ~ time
+models <- test %>%
+  group_by(unique_ID) %>%
+  do(cbind(model = select(., lnRFU, time_days) %>% 
+           zoo::rollapplyr(width = num_points, roll_regress, by.column = FALSE, fill = NA, align = 'center'),
+           time_days = select(., time_days),
+           lnRFU = select(., lnRFU))) %>%
+  rename_all(., gsub, pattern = 'model.', replacement = '')
+
+# calculate growth rate for each one
+growth_rates <- models %>%
+  filter(slope == max(slope, na.rm = TRUE)) %>%
+  ungroup()
+
+glimpse(growth_rates)
+
+```
+
+
+
+
+```{r}
+
+growth_padfield <- growth_rates %>% 
+  rename(mumax = slope,
+         r2=rsq) %>%
+  select(unique_ID, r2, mumax) %>% 
+  mutate(model = "padfield_rolling")
+  
+
+alltest <- read_csv("combinedtest.csv") %>% 
+  select(-elapsed_time)
+
+sequential_fit <- read_csv("sequential_fit.csv")
+
+head(alltest)
+
+combined_test <- bind_rows(alltest, growth_padfield, sequential_fit)
+
+```
+
+
+## plots of combined data
+
+```{r}
+library(cowplot)
+library(ggdist)
+
+A <- combined_test %>% 
+  ggplot(aes(model, r2))+
+  geom_boxplot(fill = "dark green")+
+  coord_flip()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+
+B <- combined_test %>% 
+  ggplot(aes(model, mumax))+
+  geom_boxplot(fill = "dark green")+
+  coord_flip()
+
+plot_grid(B, A, vjust = TRUE, rel_widths = c(2,1))
+
+combined_test %>% 
+  ggplot(aes(model, elapsed_time))+
+  coord_flip()+
+  geom_bar(stat = 'identity', fill = "dark green")+
+  ylab('Elapsed time (seconds)')
+
+```
+
+```{r}
+A <- combined_test %>% 
+  ggplot(aes(model, r2))+
+  stat_halfeye()+
+  geom_boxplot()+
+  coord_flip()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+
+combined_test %>% 
+  ggplot(aes(model, mumax))+
+    stat_halfeye(justification = -0.3, fill = "dark green")+
+    geom_boxplot(width = 0.2, alpha = 0.5, fill = "dark green")+
+  #stat_dots()+
+  geom_jitter()+
+  coord_flip()+
+  theme_classic()
+
+
+plot_grid(B, A, vjust = TRUE, rel_widths = c(2,1))
+
+```
+
+
+
